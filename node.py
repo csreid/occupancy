@@ -1,11 +1,13 @@
 # ros path setup
 import sys
 import os
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+import random
 
 # Add ROS2 paths to Python path
 ros_paths = [
 	"/opt/ros/jazzy/lib/python3.12/site-packages",
-	# Add any other ROS paths you need
 ]
 
 for path in ros_paths:
@@ -13,9 +15,16 @@ for path in ros_paths:
 		sys.path.append(path)
 
 from nav_msgs.msg import Odometry
+import matplotlib.pyplot as plt
+from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import LaserScan, Image, CameraInfo
+from rclpy.action import ActionClient
+from nav2_msgs.action import NavigateToPose
 from rosgraph_msgs.msg import Clock
-from std_msgs.msg import Header
+from visualization_msgs.msg import Marker, MarkerArray
+from builtin_interfaces.msg import Time
+from std_msgs.msg import Header,  ColorRGBA
+#from marti_common.msg import StringStamped
 import rclpy
 from rclpy.node import Node
 import pybullet as p
@@ -29,21 +38,71 @@ from tf2_ros import TransformBroadcaster, StaticTransformBroadcaster
 from geometry_msgs.msg import TransformStamped, Twist
 from LidarScan import LidarScan, Range
 from make_room import create_room
+from nav2_msgs.srv import ClearEntireCostmap
+from rclpy.executors import MultiThreadedExecutor
+from threading import Lock
+from moving_obstacles import add_moving_obstacles
+from uuid import uuid4
+from tqdm import tqdm
 
-def add_debug_cube(p, position, size=0.2, color=[1, 0, 0, 1], mass=0):
+def create_occupancy_grid(p, obstacle_ids, grid_size=20.0, resolution=0.1):
 	"""
-	Add a visible cube to the simulation for debugging purposes.
-	
+	Create a ground-truth occupancy grid for the simulation environment.
+
 	Args:
 		p: PyBullet physics client
-		position: [x, y, z] position for the cube
-		size: Size of the cube (default 0.2m)
-		color: RGBA color (default red)
-		mass: Mass of the cube (0 = static, >0 = dynamic)
-	
+		obstacle_ids: List of IDs for all obstacles in the environment
+		grid_size: Size of the environment in meters (assumed square)
+		resolution: Resolution of the occupancy grid in meters/cell
+
 	Returns:
-		cube_id: ID of the created cube
+		grid: 2D numpy array where 1=occupied, 0=free space
+		grid_origin: (x, y) coordinates of the grid origin in world frame
 	"""
+
+	# Calculate grid dimensions based on resolution
+	grid_cells = int(grid_size / resolution)
+	grid = np.zeros((grid_cells, grid_cells), dtype=np.uint8)
+
+	# The grid covers [-grid_size/2, grid_size/2] in both x and y
+	grid_origin = (-grid_size/2, -grid_size/2)
+
+	# Function to convert world coordinates to grid indices
+	def world_to_grid(x, y):
+		grid_x = int((x - grid_origin[0]) / resolution)
+		grid_y = int((y - grid_origin[1]) / resolution)
+		# Ensure indices are within grid bounds
+		grid_x = max(0, min(grid_x, grid_cells-1))
+		grid_y = max(0, min(grid_y, grid_cells-1))
+		return grid_x, grid_y
+
+	# Mark all cells occupied by obstacles
+	for obs_id in obstacle_ids:
+		# For complex shapes, we need to get their AABB (Axis-Aligned Bounding Box)
+		aabb_min, aabb_max = p.getAABB(obs_id)
+
+		# Get more detailed collision information using rays
+		# Sample points within the AABB
+		x_range = np.arange(aabb_min[0], aabb_max[0], resolution)
+		y_range = np.arange(aabb_min[1], aabb_max[1], resolution)
+
+		for x in x_range:
+			for y in y_range:
+				# Check if this point is inside or close to the obstacle
+				# Cast a ray from slightly above the point downward
+				start = [x, y, aabb_max[2] + 0.1]
+				end = [x, y, aabb_min[2] - 0.1]
+
+				ray_results = p.rayTest(start, end)
+
+				# If ray hits the obstacle, mark the cell as occupied
+				if ray_results[0][0] == obs_id:
+					grid_x, grid_y = world_to_grid(x, y)
+					grid[grid_y, grid_x] = 1  # Mark as occupied
+
+	return grid, grid_origin
+
+def add_cube(p, position, size=0.2, color=[1, 0, 0, 1], mass=0):
 	# Create collision shape
 	collision_shape_id = p.createCollisionShape(p.GEOM_BOX, halfExtents=[size/2, size/2, size/2])
 	
@@ -71,18 +130,11 @@ def get_sim():
 	p.setRealTimeSimulation(
 		0
 	)
-	p.setTimeStep(1/10.)
+	p.setTimeStep(1/60.)
 
 	# Load the ground plane
 	planeId = p.loadURDF("plane.urdf")
 	print(f"Ground plane loaded: {'Success' if planeId >= 0 else 'Failed'}")
-
-	# Load the robot
-	startPos = [0., 0., 0.1]
-	startOrientation = p.getQuaternionFromEuler([0, 0, 0])
-	robotId = p.loadURDF("husky/husky.urdf", startPos, startOrientation)
-
-	wall_ids = create_room(p, size=20)
 
 	# Create a directional light
 	p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS, 1)
@@ -90,9 +142,7 @@ def get_sim():
 	p.configureDebugVisualizer(p.COV_ENABLE_TINY_RENDERER, 1)
 	p.configureDebugVisualizer(p.COV_ENABLE_PLANAR_REFLECTION, 0)
 
-	add_debug_cube(p, position=[2., 0., 0.3], size=1., mass=100)
-
-	return p, robotId
+	return p
 
 def get_lidar_data(p, position, orientation, num_rays=600, max_distance=12.0):
 	ranges = []
@@ -188,19 +238,52 @@ def get_camera_data(p, position, orientation):
 class SimNode(Node):
 	def __init__(self):
 		super().__init__('sim')
-		self._sim, self._robot_id = get_sim()
-		self._iterations = 0
+		self.timestep = 0
+		self.max_timesteps = 1000
+		# Use a callback group to allow concurrent callbacks
+		self.callback_group = ReentrantCallbackGroup()
+
+		self.progress_bar = tqdm(total=100000)
+
+		# Create action client for navigation
+		self.nav_client = ActionClient(
+			self,
+			NavigateToPose,
+			'navigate_to_pose',
+			callback_group=self.callback_group
+		)
+		self._sim = get_sim()
+		self.delta_t = 1/60.
+		self.sim_time = 0.
 
 		self.base_frame='base_link'
 		self.lidar_frame='lidar_link'
 		self.camera_frame='camera_link'
 
-		self.linear_vel = 0.
-		self.angular_vel = 0.
+		#self.linear_vel = 0.
+		#self.angular_vel = 0.
 
 		self.tf_broadcaster = TransformBroadcaster(self)
 		self.static_tf_broadcaster = StaticTransformBroadcaster(self)
-		self._publish_static_transforms()
+		self.episode_id = uuid4()
+
+		self._odo_publisher = self.create_publisher(
+			Odometry,
+			'odom',
+			10
+		)
+
+#		self._episode_publisher = self.create_publisher(
+#			StringStamped,
+#			'episode_id',
+#			10
+#		)
+
+		self._gt_publisher = self.create_publisher(
+			Image,
+			'ground_truth_occupancy_grid',
+			10
+		)
 
 		self._odo_publisher = self.create_publisher(
 			Odometry,
@@ -226,51 +309,185 @@ class SimNode(Node):
 			10
 		)
 
-		self._cmd_vel_subscriber = self.create_subscription(
-			Twist,
-			'/cmd_vel',
-			lambda msg: self._cmd_vel_cb(msg),
-			10
-		)
+		## Stuff for managing the sim
+		self._robot_id = None
+		self.obstacle_ids = []
+		self.x_bounds = (-7.0, 7.0)
+		self.y_bounds = (-7.0, 7.0)
 
 		self._timer = self.create_timer(0.01, self.sim_cb)
 		self._clock_publisher = self.create_publisher(Clock, '/clock', 10)
+		# Create timer for periodic status checking
+		#self.timer = self.create_timer(1.0, self.check_nav2_status, callback_group=self.callback_group)
+
+		self._start_task_timer = None
+		self.task_running = False
+		self.is_resetting = False
+
+		self.reset_pybullet_simulation()
+
+	def maybe_reset(self):
+		if self.timestep >= self.max_timesteps:
+			self.reset_pybullet_simulation()
+			self.timestep = 0
+			self.episode_id = uuid4()
+
+	def _publish_episode(self):
+		msg = StringStamped()
+		msg.header.stamp = self.get_time_msg()
+		msg.header.frame_id = 'base_link'
+
+		msg.string = str(self.episode_id)
+
+	def _publish_static_transforms(self):
+		base_link_to_footprint = TransformStamped()
+		base_link_to_footprint.header.stamp = self.get_time_msg()
+		base_link_to_footprint.header.frame_id = self.base_frame  # base_link
+		base_link_to_footprint.child_frame_id = 'base_footprint'
+
+		base_link_to_footprint.transform.translation.x = 0.0
+		base_link_to_footprint.transform.translation.y = 0.0
+		base_link_to_footprint.transform.translation.z = 0.0
+		base_link_to_footprint.transform.rotation.x = 0.0
+		base_link_to_footprint.transform.rotation.y = 0.0
+		base_link_to_footprint.transform.rotation.z = 0.0
+		base_link_to_footprint.transform.rotation.w = 1.0
+
+		base_to_lidar = TransformStamped()
+		base_to_lidar.header.stamp = self.get_time_msg()
+		base_to_lidar.header.frame_id = self.base_frame
+		base_to_lidar.child_frame_id = self.lidar_frame
+
+		base_to_lidar.transform.translation.x = 0.0
+		base_to_lidar.transform.translation.y = 0.0
+		base_to_lidar.transform.translation.z = 0.5
+
+		base_to_lidar.transform.rotation.x = 0.0
+		base_to_lidar.transform.rotation.y = 0.0
+		base_to_lidar.transform.rotation.z = 0.0
+		base_to_lidar.transform.rotation.w = 1.0
+
+		base_to_camera = TransformStamped()
+		base_to_camera.header.stamp = self.get_time_msg()
+		base_to_camera.header.frame_id = self.base_frame
+		base_to_camera.child_frame_id = self.camera_frame
+
+		base_to_camera.transform.translation.x = 0.0
+		base_to_camera.transform.translation.y = 0.0
+		base_to_camera.transform.translation.z = 0.5
+
+		base_to_camera.transform.rotation.x = 0.0
+		base_to_camera.transform.rotation.y = 0.0
+		base_to_camera.transform.rotation.z = 0.0
+		base_to_camera.transform.rotation.w = 1.0
+
+		# Publish static transforms
+		self.static_tf_broadcaster.sendTransform([base_link_to_footprint, base_to_lidar, base_to_camera])
+
+	def random_position(self):
+		new_x = random.uniform(*self.x_bounds)
+		new_y = random.uniform(*self.y_bounds)
+		new_theta = random.uniform(-math.pi, math.pi)
+
+		return new_x, new_y, new_theta
+
+	def _publish_gt_grid(self):
+		grid, _ = create_occupancy_grid(
+			self._sim,
+			self.obstacle_ids
+		)
+
+		img_msg = Image()
+		img_msg.header.stamp = self.get_time_msg()
+		img_msg.header.frame_id = 'base_link'
+		img_msg.height = grid.shape[0]
+		img_msg.width = grid.shape[1]
+
+		img_msg.encoding = "32FC1"
+		img_msg.is_bigendian = False
+		img_msg.step = grid.shape[1] * 4
+
+		grid = grid.astype(np.float32)
+		img_msg.data = grid.tobytes()
+
+		self._gt_publisher.publish(img_msg)
+
+	def reset_pybullet_simulation(self):
+		# Clear the simulation
+		if self._robot_id is not None:
+			self._sim.removeBody(self._robot_id)
+
+		for obs_id in self.obstacle_ids:
+			self._sim.removeBody(obs_id)
+
+		self.obstacle_ids = []
+
+		# Load the robot
+		start_x, start_y, start_theta = self.random_position()
+		#start_x, start_y, start_theta = (0, 0, 0)
+
+		start_pos = [start_x, start_y, 0.1]
+		#start_pos = [0, 0, 0.1]
+		start_theta = 0.
+		start_orientation = p.getQuaternionFromEuler([0, 0, start_theta])
+		robot_id = p.loadURDF("husky/husky.urdf", start_pos, start_orientation)
+
+		self._robot_id = robot_id
+
+		# Load obstacles
+		wall_ids = create_room(p, size=20)
+		n_obstacles = np.random.randint(5, 10)
+
+		for i in range(n_obstacles):
+			size = np.random.uniform(1., 3.)
+			obs_x, obs_y, obs_theta = self.random_position()
+
+			# Give the robot a 1m circle of safety
+			obs_dist = np.linalg.norm(
+				np.array([obs_x, obs_y]) - np.array([start_x, start_y])
+			)
+			while (obs_dist - (size / 2)) < 1.:
+				obs_x, obs_y, obs_theta = self.random_position()
+				obs_dist = np.linalg.norm(
+					np.array([obs_x, obs_y]) - np.array([start_x, start_y])
+				)
+
+			obs_id = add_cube(
+				self._sim,
+				position=[obs_x, obs_y, 0.5],
+				size=size,
+				mass=100
+			)
+
+			self.obstacle_ids.append(obs_id)
+
+		self.obstacle_ids += wall_ids
+
+		self.moving_obstacles = add_moving_obstacles(
+			self._sim,
+			num_obstacles=5,
+			robot_id = self._robot_id
+		)
+
+		self.obstacle_ids += [mobs.obstacle_id for mobs in self.moving_obstacles]
+
+		# Choose a random linear/angular velocity for the robot
+		self.linear_vel = np.random.uniform(-1, 1)
+		self.angular_vel = np.random.uniform(-1, 1)
+
+		# Let things settle
+		for _ in range(100):
+			self._sim.stepSimulation()
+			self.sim_time += self.delta_t
 
 	@property
 	def _robot_pos(self):
 		return p.getBasePositionAndOrientation(self._robot_id)
 
-	def _apply_velocity(self):
-		"""Apply velocity commands to the robot in PyBullet."""
-		wheel_distance = 0.555  # Distance between left and right wheels (adjust for your robot)
-
-		left_wheel_vel = (self.linear_vel - (wheel_distance / 2.0) * self.angular_vel) / 0.1651
-		right_wheel_vel = (self.linear_vel + (wheel_distance / 2.0) * self.angular_vel) / 0.1651 # wheel radius
-
-		wheel_indices = [2,3,4,5]  # Adjust these indices if needed
-		max_force=100.
-
-		for wheel in wheel_indices:
-			if wheel in [2, 4]:  # Left wheels
-				self._sim.setJointMotorControl2(
-					bodyUniqueId=self._robot_id,
-					jointIndex=wheel,
-					controlMode=self._sim.VELOCITY_CONTROL,
-					targetVelocity=left_wheel_vel,
-					force=max_force
-				)
-			else:  # Right wheels
-				self._sim.setJointMotorControl2(
-					bodyUniqueId=self._robot_id,
-					jointIndex=wheel,
-					controlMode=self._sim.VELOCITY_CONTROL,
-					targetVelocity=right_wheel_vel,
-					force=max_force
-				)
-
-	def _cmd_vel_cb(self, msg):
-		self.linear_vel = msg.linear.x
-		self.angular_vel = msg.angular.z
+	@property
+	def robot_xy(self):
+		pos, _ = self._robot_pos
+		return pos[0], pos[1]
 
 	def _publish_camera_info(self):
 		width = 320
@@ -280,7 +497,7 @@ class SimNode(Node):
 		focal_length = (width / 2.0) / math.tan(math.radians(fov / 2.0))
 
 		camera_info_msg = CameraInfo()
-		camera_info_msg.header.stamp = self.get_clock().now().to_msg()
+		camera_info_msg.header.stamp = self.get_time_msg()
 		camera_info_msg.header.frame_id = self.camera_frame
 
 		camera_info_msg.width = width
@@ -309,54 +526,17 @@ class SimNode(Node):
 		# Publish the message
 		self._camera_info_publisher.publish(camera_info_msg)
 
-	def _publish_static_transforms(self):
-		base_link_to_footprint = TransformStamped()
-		base_link_to_footprint.header.stamp = self.get_clock().now().to_msg()
-		base_link_to_footprint.header.frame_id = self.base_frame  # base_link
-		base_link_to_footprint.child_frame_id = 'base_footprint'
+	def get_time_msg(self):
+		time = Time()
+		sim_sec = int(self.sim_time)
+		sim_nano = int((self.sim_time - sim_sec) * 1e9)
+		time.sec = sim_sec
+		time.nanosec = sim_nano
 
-		base_link_to_footprint.transform.translation.x = 0.0
-		base_link_to_footprint.transform.translation.y = 0.0
-		base_link_to_footprint.transform.translation.z = 0.0
-		base_link_to_footprint.transform.rotation.x = 0.0
-		base_link_to_footprint.transform.rotation.y = 0.0
-		base_link_to_footprint.transform.rotation.z = 0.0
-		base_link_to_footprint.transform.rotation.w = 1.0
-
-		base_to_lidar = TransformStamped()
-		base_to_lidar.header.stamp = self.get_clock().now().to_msg()
-		base_to_lidar.header.frame_id = self.base_frame
-		base_to_lidar.child_frame_id = self.lidar_frame
-
-		base_to_lidar.transform.translation.x = 0.0
-		base_to_lidar.transform.translation.y = 0.0
-		base_to_lidar.transform.translation.z = 0.5
-
-		base_to_lidar.transform.rotation.x = 0.0
-		base_to_lidar.transform.rotation.y = 0.0
-		base_to_lidar.transform.rotation.z = 0.0
-		base_to_lidar.transform.rotation.w = 1.0
-
-		base_to_camera = TransformStamped()
-		base_to_camera.header.stamp = self.get_clock().now().to_msg()
-		base_to_camera.header.frame_id = self.base_frame
-		base_to_camera.child_frame_id = self.camera_frame
-
-		base_to_camera.transform.translation.x = 0.0
-		base_to_camera.transform.translation.y = 0.0
-		base_to_camera.transform.translation.z = 0.5
-
-		base_to_camera.transform.rotation.x = 0.0
-		base_to_camera.transform.rotation.y = 0.0
-		base_to_camera.transform.rotation.z = 0.0
-		base_to_camera.transform.rotation.w = 1.0
-
-		# Publish static transforms
-		self.static_tf_broadcaster.sendTransform([base_link_to_footprint, base_to_lidar, base_to_camera])
-		self.get_logger().info('Published static transforms')
+		return time
 
 	def _publish_lidar(self):
-		t = self.get_clock().now().to_msg()
+		t = self.get_time_msg()
 		rays = 600
 		lidar_position, lidar_orient = self._robot_pos
 		lidar_position = np.array(lidar_position) + np.array([0, 0, 0.5])
@@ -391,7 +571,7 @@ class SimNode(Node):
 		img_arry = get_camera_data(self._sim, position, orientation)
 
 		img_msg = Image()
-		img_msg.header.stamp = self.get_clock().now().to_msg()
+		img_msg.header.stamp = self.get_time_msg()
 		img_msg.header.frame_id = self.camera_frame
 		img_msg.height = 240
 		img_msg.width = 320
@@ -402,68 +582,13 @@ class SimNode(Node):
 
 		self._camera_publisher.publish(img_msg)
 
-	def _debug_visualize_lidar(self):
-		"""Visualize lidar rays directly in PyBullet for debugging"""
-		lidar_position, _ = self._robot_pos
-		lidar_position = np.array(lidar_position) + np.array([0, 0, 0.5])  # Adjust to lidar height
-
-		# Clear any previous debug lines
-		# (You might need to store line IDs if this approach doesn't work)
-		self._sim.removeAllUserDebugItems()
-
-		# Get the lidar data
-		ranges = get_lidar_data(
-			self._sim,
-			lidar_position,
-			num_rays=30 # Use fewer rays for visualization clarity
-		)
-
-		# Draw each ray
-		for r in ranges:
-			angle = r.angle
-			distance = r.distance
-
-			# Calculate endpoint
-			end_x = lidar_position[0] + distance * math.cos(angle)
-			end_y = lidar_position[1] + distance * math.sin(angle)
-			end_z = lidar_position[2]
-
-			# Draw line for the ray (red for hits, blue for max distance)
-			color = [1, 0, 0] if distance < 12.0 else [0, 0, 1]
-			self._sim.addUserDebugLine(
-				lidar_position,
-				[end_x, end_y, end_z],
-				color,
-				lineWidth=1,
-				lifeTime=0.1
-			)
-
-	def _publish_transforms(self, timestamp):
-		# During first few iterations, publish map→odom to help bootstrap
-		if self._iterations < 50:  # Only during startup
-			map_to_odom = TransformStamped()
-			map_to_odom.header.stamp = timestamp
-			map_to_odom.header.frame_id = 'map'
-			map_to_odom.child_frame_id = 'odom'
-			# Identity transform (0,0,0 position, no rotation)
-			map_to_odom.transform.translation.x = 0.0
-			map_to_odom.transform.translation.y = 0.0
-			map_to_odom.transform.translation.z = 0.0
-			map_to_odom.transform.rotation.x = 0.0
-			map_to_odom.transform.rotation.y = 0.0
-			map_to_odom.transform.rotation.z = 0.0
-			map_to_odom.transform.rotation.w = 1.0
-			
-			self.tf_broadcaster.sendTransform(map_to_odom)
-			self._iterations += 1
-
 	def _publish_odom(self):
 		position, orientation = self._robot_pos
 		#linear, angular = p.getBaseVelocity(self._robot_id)
 		world_linear, world_angular = p.getBaseVelocity(self._robot_id)
 
 		odom_msg = Odometry()
-		odom_msg.header.stamp = self.get_clock().now().to_msg()
+		odom_msg.header.stamp = self.get_time_msg()
 		odom_msg.header.frame_id = "odom"
 		odom_msg.child_frame_id = self.base_frame
 
@@ -513,7 +638,7 @@ class SimNode(Node):
 
 		# Transform stuff
 		transform = TransformStamped()
-		transform.header.stamp = self.get_clock().now().to_msg()
+		transform.header.stamp = self.get_time_msg()
 		transform.header.frame_id = "odom"
 		transform.child_frame_id = self.base_frame
 
@@ -530,31 +655,88 @@ class SimNode(Node):
 		self.tf_broadcaster.sendTransform(transform)
 
 	def _step_simulation(self):
-		for _ in range(2):
+		for _ in range(10):
 			p.stepSimulation()
 
-	def sim_cb(self):
-		clock_msg = Clock()
-		sim_time = self.get_clock().now().to_msg()
-		clock_msg.clock = sim_time
-		self._clock_publisher.publish(clock_msg)
+	def _update_obstacles(self):
+		dt = 1/6.
 
-		self._apply_velocity()
+		for obs in self.moving_obstacles:
+			obs.update(dt)
+
+	def _apply_velocity(self):
+		"""Apply velocity commands to the robot in PyBullet."""
+		wheel_distance = 0.555
+
+		left_wheel_vel = (self.linear_vel - (wheel_distance / 2.0) * self.angular_vel) / 0.1651
+		right_wheel_vel = (self.linear_vel + (wheel_distance / 2.0) * self.angular_vel) / 0.1651 # wheel radius
+
+		#print(f'Applying {left_wheel_vel:.2f}, {right_wheel_vel:.2f}')
+
+		wheel_indices = [2,3,4,5]
+		max_force=100.
+
+		for wheel in wheel_indices:
+			if wheel in [2, 4]:  # Left wheels
+				self._sim.setJointMotorControl2(
+					bodyUniqueId=self._robot_id,
+					jointIndex=wheel,
+					controlMode=self._sim.VELOCITY_CONTROL,
+					targetVelocity=left_wheel_vel,
+					force=max_force
+				)
+			else:  # Right wheels
+				self._sim.setJointMotorControl2(
+					bodyUniqueId=self._robot_id,
+					jointIndex=wheel,
+					controlMode=self._sim.VELOCITY_CONTROL,
+					targetVelocity=right_wheel_vel,
+					force=max_force
+				)
+
+	def sim_cb(self):
+		if self.is_resetting:
+			return
+
+		self.timestep += 10
+		self.sim_time += (self.delta_t * 10)
+		clock_msg = Clock()
+		time_msg = self.get_time_msg()
+		clock_msg.clock = time_msg
 
 		self._step_simulation()
 
+		self._update_obstacles()
 		self._publish_lidar()
 		self._publish_camera_info()
 		self._publish_camera()
-		self._publish_odom()
+		self._publish_gt_grid()
+		self._publish_static_transforms()
+		self._apply_velocity()
+		#self._publish_episode()
+		self.maybe_reset()
+
+		self.progress_bar.update(10)
+
+		if self.timestep >= 100000:
+			sys.exit(0)
 
 def main(args=None):
 	rclpy.init(args=args)
-	sim = SimNode()
-	rclpy.spin(sim)
+	node = SimNode()
 
-	sim.destroy_node()
-	rclpy.shutdown()
+	# Use a multithreaded executor to prevent blocking
+	executor = MultiThreadedExecutor()
+	executor.add_node(node)
+
+	try:
+		executor.spin()
+	except KeyboardInterrupt:
+		pass
+	finally:
+		executor.shutdown()
+		node.destroy_node()
+		rclpy.shutdown()
 
 if __name__ == '__main__':
 	main()

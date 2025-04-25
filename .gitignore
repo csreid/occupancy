@@ -1,2 +1,5 @@
 __pycache__
 .ipynb_checkpoints
+data.sqlite
+sim_data
+runs
