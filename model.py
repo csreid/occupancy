@@ -150,7 +150,10 @@ class RecurrentModule(Module):
 		self._linear = Linear(128, 512)
 
 	def forward(self, X):
-		return self._rnn(X)
+		out, h = self._rnn(X)
+		out = self._linear(out)
+
+		return out, h
 
 class OutputModule(Module):
 	def __init__(self):
