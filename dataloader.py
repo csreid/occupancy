@@ -114,6 +114,8 @@ class OccupancyDataLoader:
 		for ep in episodes:
 			img_tens = torch.tensor(np.array(gid_map[ep]['imgs']))
 			scan_tens = torch.tensor(np.array(gid_map[ep]['scans']))
+			# Add noise to the lidar scan of +/- 5cm
+			scan_tens = ((scan_tens * 12.) + torch.randn_like(scan_tens) * 0.05) / 12.
 			grid_tens = torch.tensor(np.array(gid_map[ep]['grids']))
 
 			img_batch.append(img_tens)
