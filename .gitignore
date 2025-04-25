@@ -3,3 +3,4 @@ __pycache__
 data.sqlite
 sim_data
 runs
+model.pt
