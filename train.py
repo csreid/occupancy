@@ -20,8 +20,8 @@ try:
 	model.load_state_dict(torch.load('model.pt', weights_only=False))
 except:
 	print(f'Could not load a model, starting fresh')
-	opt = Adam(model.parameters(), weight_decay=0.1)
 
+opt = Adam(model.parameters(), weight_decay=0.1)
 loader = OccupancyDataLoader(cv_fraction=0.1)
 
 loss_fn = BCEWithLogitsLoss()
