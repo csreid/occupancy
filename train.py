@@ -8,6 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 BATCH_SIZE=8
 ITERATIONS=10000
+STEP_ITERS=10
 
 if torch.cuda.is_available():
 	dev = 'cuda:0'
@@ -48,22 +49,23 @@ def log_sample(i):
 try:
 	for i in tqdm(range(ITERATIONS)):
 		imgs, scans, grids = loader.sample(16)
-		pred = model(scans.to(dev), imgs.to(dev)).squeeze().flatten(start_dim=0, end_dim=1).unsqueeze(1)
+		for _ in range(STEP_ITERS):
+			pred = model(scans.to(dev), imgs.to(dev)).squeeze().flatten(start_dim=0, end_dim=1).unsqueeze(1)
 
-		# To make this work, gotta squeeze seq_length
-		# and batch size into the same dim
-		loss = loss_fn(
-				pred,
-				grids.flatten(start_dim=0, end_dim=1).unsqueeze(1).to(dev),
-		)
-		writer.add_scalar('Loss', loss, i)
-		opt.zero_grad()
-		loss.backward()
+			# To make this work, gotta squeeze seq_length
+			# and batch size into the same dim
+			loss = loss_fn(
+					pred,
+					grids.flatten(start_dim=0, end_dim=1).unsqueeze(1).to(dev),
+			)
+			writer.add_scalar('Loss', loss, i)
+			opt.zero_grad()
+			loss.backward()
 
-		opt.step()
-		if (i%1) == 0:
-			log_sample(i)
-			val_loss = validate(model)
-			writer.add_scalar('CV Loss', val_loss, i)
+			opt.step()
+			if (i%1) == 0:
+				log_sample(i)
+				val_loss = validate(model)
+				writer.add_scalar('CV Loss', val_loss, i)
 finally:
 	torch.save(model.state_dict(), 'model.pt')
