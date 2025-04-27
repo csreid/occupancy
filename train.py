@@ -30,18 +30,22 @@ loss_fn_odom = MSELoss()
 
 def validate(model):
 	with torch.no_grad():
-		imgs, scans, grids = loader.sample(4, for_cv=True)
-		pred = model(scans.to(dev), imgs.to(dev)).squeeze().flatten(start_dim=0, end_dim=1)
-		loss = loss_fn(
-				pred,
+		(imgs, scans, init_pose), (grids, poses) = loader.sample(4, for_cv=True)
+		pred, pred_pose = model(scans.to(dev), imgs.to(dev), init_pose.to(dev))
+		loss_grid = loss_fn_grid(
+				pred.squeeze().flatten(start_dim=0, end_dim=1),
 				grids.flatten(start_dim=0, end_dim=1).to(dev),
 		)
-		return loss
+		loss_odom = loss_fn_odom(
+			pred_pose,
+			poses.to(dev)
+		)
+		return loss_grid + loss_pose
 
 def log_sample(i):
-	sample_imgs, sample_scans, sample_grid = loader.sample(1, for_cv=True)
+	(sample_imgs, sample_scans, sample_init_pose), (grids, poses) = loader.sample(1, for_cv=True)
 	with torch.no_grad():
-		sample_out = model(sample_scans.to(dev), sample_imgs.to(dev)).squeeze().unsqueeze(0).unsqueeze(2)
+		sample_out, _ = model(sample_scans.to(dev), sample_imgs.to(dev))[0].squeeze().unsqueeze(0).unsqueeze(2)
 		sample_grid = sample_grid.squeeze().unsqueeze(0).unsqueeze(2).to(dev)
 
 		video = torch.cat((sample_grid, sample_out), dim=-1).expand(-1, -1, 3, -1, -1) # Pop the one channel into RGB to treat it like a video
