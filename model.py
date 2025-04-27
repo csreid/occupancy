@@ -84,15 +84,15 @@ class VisionModule(Module):
 	def forward(self, X):
 		out = self.cnn1(X)
 		out = self.mp1(out)
-		out = torch.sigmoid(out)
+		out = torch.relu(out)
 
 		out = self.cnn2(out)
 		out = self.mp2(out)
-		out = torch.sigmoid(out)
+		out = torch.relu(out)
 
 		out = self.cnn3(out)
 		out = self.mp3(out)
-		out = torch.sigmoid(out)
+		out = torch.relu(out)
 
 		out = torch.flatten(out, start_dim=1)
 		out = self.linear(out)
@@ -129,11 +129,11 @@ class LidarModule(Module):
 	def forward(self, X):
 		out = self.cnn1(X)
 		out = self.mp1(out)
-		out = torch.sigmoid(out)
+		out = torch.relu(out)
 
 		out = self.cnn2(out)
 		out = self.mp2(out)
-		out = torch.sigmoid(out)
+		out = torch.relu(out)
 
 		out = torch.flatten(out, start_dim=1)
 
@@ -145,8 +145,8 @@ class RecurrentModule(Module):
 	def __init__(self):
 		super().__init__()
 		self._input_size = 128*2 #128 for each of LIDAR and vision data
-		self._rnn = LSTM(self._input_size, 128)
-		self._linear = Linear(128, 512)
+		self._rnn = LSTM(self._input_size, 256)
+		self._linear = Linear(256, 512)
 
 	def forward(self, X, in_state=None):
 		hidden_size = 128
@@ -191,15 +191,15 @@ class GridOutputModule(Module):
 		out = X.reshape((-1, 128, 2, 2))
 		out = self._deconv1(out)
 		out = self._ups1(out)
-		out = torch.sigmoid(out)
+		out = torch.relu(out)
 
 		out = self._deconv2(out)
 		out = self._ups2(out)
-		out = torch.sigmoid(out)
+		out = torch.relu(out)
 
 		out = self._deconv3(out)
 		out = self._ups3(out)
-		out = torch.sigmoid(out)
+		out = torch.relu(out)
 
 		# Reshape back to original
 		out = out.reshape(in_shape[0], in_shape[1], 1, 200, 200)
