@@ -25,7 +25,7 @@ class OccupancyDataLoader:
 	def __init__(self, cv_fraction=0.):
 		self.db_path = 'data.sqlite'
 		self.conn = sqlite3.Connection(self.db_path)
-		self.cache = LRUCache(max_size=4)
+		self.cache = LRUCache(max_size=200)
 
 		c = self.conn.cursor()
 		ep_query = """

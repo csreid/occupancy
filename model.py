@@ -147,8 +147,8 @@ class RecurrentModule(Module):
 		hidden_size = 128
 		batch_size = X.shape[1]
 
-		h = torch.zeros(1, batch_size, hidden_size)
-		c = torch.zeros(1, batch_size, hidden_size)
+		h = torch.zeros(1, batch_size, hidden_size, device=X.device)
+		c = torch.zeros(1, batch_size, hidden_size, device=X.device)
 
 		if in_state is not None:
 			# Initialize the hidden state

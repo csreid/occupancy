@@ -23,7 +23,7 @@ except:
 	print(f'Could not load a model, starting fresh')
 
 opt = Adam(model.parameters(),) #weight_decay=0.01)
-loader = OccupancyDataLoader(cv_fraction=0.5)
+loader = OccupancyDataLoader(cv_fraction=0.1)
 
 loss_fn_grid = BCEWithLogitsLoss()
 loss_fn_odom = MSELoss()
@@ -45,7 +45,7 @@ def validate(model):
 def log_sample(i):
 	(sample_imgs, sample_scans, sample_init_pose), (grids, poses) = loader.sample(1, for_cv=False)
 	with torch.no_grad():
-		sample_out = model(sample_scans.to(dev), sample_imgs.to(dev), sample_init_pose)[0].squeeze().unsqueeze(0).unsqueeze(2).to(dev)
+		sample_out = model(sample_scans.to(dev), sample_imgs.to(dev), sample_init_pose.to(dev))[0].squeeze().unsqueeze(0).unsqueeze(2).to(dev)
 		grids = grids.squeeze().unsqueeze(0).unsqueeze(2).to(dev)
 
 		video = torch.cat((grids, sample_out), dim=-1).expand(-1, -1, 3, -1, -1) # Pop the one channel into RGB to treat it like a video
