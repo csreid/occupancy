@@ -30,7 +30,7 @@ loss_fn_odom = MSELoss()
 
 def validate(model):
 	with torch.no_grad():
-		(imgs, scans, init_pose), (grids, poses) = loader.sample(4, for_cv=True)
+		(imgs, scans, init_pose), (grids, poses) = loader.sample(12, for_cv=True)
 		pred, pred_pose = model(scans.to(dev), imgs.to(dev), init_pose.to(dev))
 		loss_grid = loss_fn_grid(
 				pred.squeeze().flatten(start_dim=0, end_dim=1),
@@ -87,8 +87,9 @@ try:
 		loss.backward()
 		opt.step()
 
-		if (i%1) == 0:
-			log_sample(i)
+		log_sample(i)
+
+		if (i%10) == 0:
 			val_loss_grid, val_loss_odom = validate(model)
 			writer.add_scalar('CV Loss/occupancy', val_loss_grid, i)
 			writer.add_scalar('CV Loss/odom', val_loss_odom, i)
