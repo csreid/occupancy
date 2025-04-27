@@ -149,7 +149,7 @@ class RecurrentModule(Module):
 		self._linear = Linear(256, 512)
 
 	def forward(self, X, in_state=None):
-		hidden_size = 128
+		hidden_size = 256
 		batch_size = X.shape[1]
 
 		h = torch.zeros(1, batch_size, hidden_size, device=X.device)
