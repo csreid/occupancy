@@ -1,6 +1,6 @@
 import torch
 import math
-from torch.nn import LSTM, Linear, Module, Conv2d, MaxPool2d, Conv1d, MaxPool1d, ConvTranspose2d, Upsample
+from torch.nn import LSTM, Linear, Module, Conv2d, MaxPool2d, Conv1d, MaxPool1d, ConvTranspose2d, Upsample, functional as F
 import matplotlib.pyplot as plt
 
 def _output_size(input_size, conv, mp):
@@ -84,15 +84,15 @@ class VisionModule(Module):
 	def forward(self, X):
 		out = self.cnn1(X)
 		out = self.mp1(out)
-		out = torch.leaky_relu(out)
+		out = F.leaky_relu(out)
 
 		out = self.cnn2(out)
 		out = self.mp2(out)
-		out = torch.leaky_relu(out)
+		out = F.leaky_relu(out)
 
 		out = self.cnn3(out)
 		out = self.mp3(out)
-		out = torch.leaky_relu(out)
+		out = F.leaky_relu(out)
 
 		out = torch.flatten(out, start_dim=1)
 		out = self.linear(out)
@@ -129,11 +129,11 @@ class LidarModule(Module):
 	def forward(self, X):
 		out = self.cnn1(X)
 		out = self.mp1(out)
-		out = torch.leaky_relu(out)
+		out = F.leaky_relu(out)
 
 		out = self.cnn2(out)
 		out = self.mp2(out)
-		out = torch.leaky_relu(out)
+		out = F.leaky_relu(out)
 
 		out = torch.flatten(out, start_dim=1)
 
@@ -191,15 +191,15 @@ class GridOutputModule(Module):
 		out = X.reshape((-1, 128, 2, 2))
 		out = self._deconv1(out)
 		out = self._ups1(out)
-		out = torch.leaky_relu(out)
+		out = F.leaky_relu(out)
 
 		out = self._deconv2(out)
 		out = self._ups2(out)
-		out = torch.leaky_relu(out)
+		out = F.leaky_relu(out)
 
 		out = self._deconv3(out)
 		out = self._ups3(out)
-		out = torch.leaky_relu(out)
+		out = F.leaky_relu(out)
 
 		# Reshape back to original
 		out = out.reshape(in_shape[0], in_shape[1], 1, 200, 200)
