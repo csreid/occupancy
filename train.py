@@ -22,7 +22,7 @@ try:
 except:
 	print(f'Could not load a model, starting fresh')
 
-opt = Adam(model.parameters(), weight_decay=0.01)
+opt = Adam(model.parameters(),) #weight_decay=0.01)
 loader = OccupancyDataLoader(cv_fraction=0.5)
 
 loss_fn_grid = BCEWithLogitsLoss()
