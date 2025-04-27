@@ -75,7 +75,7 @@ try:
 		writer.add_scalar('Loss/Occupancy Grid Loss', loss_grid, i)
 		writer.add_scalar('Loss/Odom Loss', loss_odom, i)
 
-		loss = loss_grid + loss_odom
+		loss = 20*loss_grid + loss_odom
 
 		opt.zero_grad()
 		loss.backward()
