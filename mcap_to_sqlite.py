@@ -13,6 +13,7 @@ import numpy as np
 from io import BytesIO
 import cv2
 from cv_bridge import CvBridge
+from nav_msgs.msg import Odometry
 import rosbag2_py
 import sensor_msgs.msg
 import nav_msgs.msg
@@ -28,7 +29,7 @@ converter_options = rosbag2_py.ConverterOptions(
     input_serialization_format="cdr",
     output_serialization_format="cdr"
 )
-topics = ['/camera', '/scan', '/ground_truth_occupancy_grid']
+topics = ['/camera', '/scan', '/ground_truth_occupancy_grid', '/odom']
 bag_filter = rosbag2_py.StorageFilter()
 bag_filter.topics = topics
 
@@ -64,6 +65,15 @@ c.execute('''
 		data blob
 	)
 ''')
+c.execute('''
+	create table if not exists poses (
+		id integer primary key,
+		timestamp integer,
+		x float,
+		y float,
+		theta float
+	)
+''')
 
 def ros_to_img(img):
 	deser = serialization.deserialize_message(img, message_type=Image)
@@ -86,12 +96,43 @@ def ros_to_gt(img):
 
 	return timestamp, gt.tobytes()
 
+def ros_to_odom(odom):
+	data = serialization.deserialize_message(odom, message_type=Odometry)
+	timestamp = data.header.stamp.sec * 1e9 + data.header.stamp.nanosec
+
+	x = data.pose.pose.position.x
+	y = data.pose.pose.position.y
+	theta = data.pose.pose.orientation.z
+
+	return timestamp, x, y, theta
+
 def scan_to_numpy(scan):
 	data = serialization.deserialize_message(scan, message_type=LaserScan)
 	ranges = np.array(data.ranges)
 	timestamp = data.header.stamp.sec * 1e9 + data.header.stamp.nanosec
 
 	return timestamp, ranges.tobytes()
+
+def commit_pose_batch(batch):
+	c = conn.cursor()
+	c.executemany(
+		"""
+		insert into poses(
+			timestamp,
+			x,
+			y,
+			theta
+		) values (
+			?, ?, ?, ?
+		)
+		""",
+		[
+			ros_to_odom(b)
+			for b
+			in batch
+		]
+	)
+	conn.commit()
 
 def commit_img_batch(batch):
 	c = conn.cursor()
@@ -156,9 +197,11 @@ count = 0
 imgs = []
 scans = []
 grids = []
+poses = []
 
 while reader.has_next():
 	cur = reader.read_next()
+	#print(f'Handling message from {cur[0]}')
 	if cur[0] == '/scan':
 		scans.append(cur[1])
 		if len(scans) >= batch_size:
@@ -174,8 +217,14 @@ while reader.has_next():
 		if len(imgs) >= batch_size:
 			commit_img_batch(imgs)
 			imgs = []
+	elif cur[0] == '/odom':
+		poses.append(cur[1])
+		if len(poses) >= batch_size:
+			commit_pose_batch(poses)
+			poses = []
+
+	else:
+		print(cur[0])
 
 	progress.update()
 	count += 1
-	if count > 40000:
-		break

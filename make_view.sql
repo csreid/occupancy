@@ -34,6 +34,9 @@ group_numbers AS (
 		group_numbers.timestamp,
 		images.image,
 		scans.ranges,
+		poses.x,
+		poses.y,
+		poses.theta,
 		occupancy_grids.data
 	FROM
 		images join
@@ -41,8 +44,10 @@ group_numbers AS (
 			on images.timestamp = scans.timestamp join
 		occupancy_grids
 			on occupancy_grids.timestamp = images.timestamp join
-		group_numbers ON images.timestamp = group_numbers.timestamp;
+		group_numbers ON images.timestamp = group_numbers.timestamp join
+		poses on poses.timestamp = group_numbers.timestamp;
 
 create index scan_ts on scans(timestamp);
 create index image_ts on images(timestamp);
 create index occupancy_grid_ts on occupancy_grids(timestamp);
+create index pose_ts on poses(timestamp);

@@ -50,8 +50,6 @@ class VisionModule(Module):
 			stride=4,
 		)
 
-		ow, oh = _output_size((self._img_width, self._img_height), self.cnn1, self.mp1)
-
 		self.cnn2 = Conv2d(
 			in_channels=16,
 			out_channels=32,
@@ -64,8 +62,6 @@ class VisionModule(Module):
 			stride=3,
 		)
 
-		ow, oh = _output_size((ow, oh,), self.cnn2, self.mp2)
-
 		self.cnn3 = Conv2d(
 			in_channels=32,
 			out_channels=64,
@@ -76,8 +72,6 @@ class VisionModule(Module):
 			kernel_size=3,
 			stride=3,
 		)
-
-		ow, oh = _output_size((ow, oh), self.cnn3, self.mp3)
 
 		self.linear = Linear(384, 128)
 
@@ -149,13 +143,25 @@ class RecurrentModule(Module):
 		self._rnn = LSTM(self._input_size, 128)
 		self._linear = Linear(128, 512)
 
-	def forward(self, X):
-		out, h = self._rnn(X)
+	def forward(self, X, in_state=None):
+		hidden_size = 128
+		batch_size = X.shape[1]
+
+		h = torch.zeros(1, batch_size, hidden_size)
+		c = torch.zeros(1, batch_size, hidden_size)
+
+		if in_state is not None:
+			# Initialize the hidden state
+			# with whatever embedding the PoseModule
+			# has come up with
+			h[:, :, :4] = in_state.view(1, batch_size, 4)
+
+		out, h = self._rnn(X, (h, c))
 		out = self._linear(out)
 
 		return out, h
 
-class OutputModule(Module):
+class GridOutputModule(Module):
 	def __init__(self):
 		super().__init__()
 		# Input to deconv should be 128 channels of 2x2
@@ -192,15 +198,43 @@ class OutputModule(Module):
 
 		return out
 
+class PoseInputModule(Module):
+	def __init__(self):
+		super().__init__()
+		# Input will be x, y, cos(t), sin(t)
+		self._input = Linear(4, 4)
+
+	def forward(self, X):
+		out = self._input(X)
+		return out
+
+class PoseOutputModule(Module):
+	def __init__(self):
+		super().__init__()
+		# Map the output of the LSTM back to
+		# x, y, cos(theta) -- will map back to theta
+		# in the forward
+		self._input = Linear(512, 4)
+
+	def forward(self, X):
+		out = self._input(X)
+		# All sequences, all batches, last feature
+		#out[:, :, -1] = torch.acos(out[:, :, -1])
+
+		return out
+
 class OccupancyGridModule(Module):
 	def __init__(self):
 		super().__init__()
 		self._vision = VisionModule()
 		self._lidar = LidarModule()
 		self._rnn = RecurrentModule()
-		self._output = OutputModule()
+		self._pose_in = PoseInputModule()
 
-	def forward(self, lidar, camera):
+		self._grid_out = GridOutputModule()
+		self._pose_out = PoseOutputModule()
+
+	def forward(self, lidar, camera, initial_pose):
 		# Input shape for camera will be:
 		#     sequence_length x batch_size x channels x height x width
 		# Need to squash batch_size x sequence_length into one:
@@ -215,17 +249,17 @@ class OccupancyGridModule(Module):
 		vision_feats = self._vision(camera).reshape(camera_shape[0], camera_shape[1], -1)
 		lidar_feats = self._lidar(lidar).reshape(lidar_shape[0], lidar_shape[1], -1)
 
+		pose_feats = self._pose_in(initial_pose)
+
 		feats = torch.cat([vision_feats, lidar_feats], dim=2)
 
-		out, _ = self._rnn(feats)
-		out = self._output(out)
+		out, _ = self._rnn(feats, in_state=pose_feats)
+		grid_out = self._grid_out(out)
+		pose_out = self._pose_out(out)
 
-		return out
+		return grid_out, pose_out
 
 if __name__ == '__main__':
-	vm = VisionModule()
-	lm = LidarModule()
-	om = OutputModule()
 	og = OccupancyGridModule()
 
 	test_imgs = torch.zeros((100, 16, 3, 240, 320))

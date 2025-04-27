@@ -1,5 +1,5 @@
 from tqdm import tqdm
-from torch.nn import CrossEntropyLoss, BCEWithLogitsLoss
+from torch.nn import CrossEntropyLoss, BCEWithLogitsLoss, MSELoss
 import torch
 from torch.optim import Adam
 from dataloader import OccupancyDataLoader
@@ -25,7 +25,9 @@ except:
 opt = Adam(model.parameters(), weight_decay=0.1)
 loader = OccupancyDataLoader(cv_fraction=0.1)
 
-loss_fn = BCEWithLogitsLoss()
+loss_fn_grid = BCEWithLogitsLoss()
+loss_fn_odom = MSELoss()
+
 def validate(model):
 	with torch.no_grad():
 		imgs, scans, grids = loader.sample(4, for_cv=True)
@@ -48,20 +50,34 @@ def log_sample(i):
 
 try:
 	for i in tqdm(range(ITERATIONS)):
-		imgs, scans, grids = loader.sample(16)
-		pred = model(scans.to(dev), imgs.to(dev)).squeeze().flatten(start_dim=0, end_dim=1).unsqueeze(1)
+		#imgs, scans, grids = loader.sample(16)
+		(imgs, scans, init_pose), (grids, poses) = loader.sample(2)
+		pred_grid, pred_pose = model(
+			scans.to(dev),
+			imgs.to(dev),
+			init_pose.to(dev)
+		)
 
 		# To make this work, gotta squeeze seq_length
 		# and batch size into the same dim
-		loss = loss_fn(
-				pred,
+		loss_grid = loss_fn_grid(
+				pred_grid.flatten(start_dim=0, end_dim=1).to(dev),
 				grids.flatten(start_dim=0, end_dim=1).unsqueeze(1).to(dev),
 		)
-		writer.add_scalar('Loss', loss, i)
+
+		loss_odom = loss_fn_odom(
+			pred_pose,
+			poses.to(dev)
+		)
+		writer.add_scalar('Occupancy Grid Loss', loss_grid, i)
+		writer.add_scalar('Odom Loss', loss_odom, i)
+
+		loss = loss_grid + loss_odom
+
 		opt.zero_grad()
 		loss.backward()
-
 		opt.step()
+
 		if (i%1) == 0:
 			log_sample(i)
 			val_loss = validate(model)

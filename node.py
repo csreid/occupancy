@@ -707,6 +707,7 @@ class SimNode(Node):
 		self._step_simulation()
 
 		self._update_obstacles()
+		self._publish_odom()
 		self._publish_lidar()
 		self._publish_camera_info()
 		self._publish_camera()
