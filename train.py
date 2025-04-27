@@ -6,7 +6,7 @@ from dataloader import OccupancyDataLoader
 from model import OccupancyGridModule
 from torch.utils.tensorboard import SummaryWriter
 
-BATCH_SIZE=8
+BATCH_SIZE=16
 ITERATIONS=10000
 STEP_ITERS=10
 
@@ -22,8 +22,8 @@ try:
 except:
 	print(f'Could not load a model, starting fresh')
 
-opt = Adam(model.parameters(), weight_decay=0.1)
-loader = OccupancyDataLoader(cv_fraction=0.1)
+opt = Adam(model.parameters(), weight_decay=0.01)
+loader = OccupancyDataLoader(cv_fraction=0.5)
 
 loss_fn_grid = BCEWithLogitsLoss()
 loss_fn_odom = MSELoss()
@@ -40,22 +40,21 @@ def validate(model):
 			pred_pose,
 			poses.to(dev)
 		)
-		return loss_grid + loss_pose
+		return loss_grid, loss_odom
 
 def log_sample(i):
-	(sample_imgs, sample_scans, sample_init_pose), (grids, poses) = loader.sample(1, for_cv=True)
+	(sample_imgs, sample_scans, sample_init_pose), (grids, poses) = loader.sample(1, for_cv=False)
 	with torch.no_grad():
-		sample_out, _ = model(sample_scans.to(dev), sample_imgs.to(dev))[0].squeeze().unsqueeze(0).unsqueeze(2)
-		sample_grid = sample_grid.squeeze().unsqueeze(0).unsqueeze(2).to(dev)
+		sample_out = model(sample_scans.to(dev), sample_imgs.to(dev), sample_init_pose)[0].squeeze().unsqueeze(0).unsqueeze(2).to(dev)
+		grids = grids.squeeze().unsqueeze(0).unsqueeze(2).to(dev)
 
-		video = torch.cat((sample_grid, sample_out), dim=-1).expand(-1, -1, 3, -1, -1) # Pop the one channel into RGB to treat it like a video
+		video = torch.cat((grids, sample_out), dim=-1).expand(-1, -1, 3, -1, -1) # Pop the one channel into RGB to treat it like a video
 
 		writer.add_video('Sample', video, i)
 
 try:
 	for i in tqdm(range(ITERATIONS)):
-		#imgs, scans, grids = loader.sample(16)
-		(imgs, scans, init_pose), (grids, poses) = loader.sample(2)
+		(imgs, scans, init_pose), (grids, poses) = loader.sample(BATCH_SIZE)
 		pred_grid, pred_pose = model(
 			scans.to(dev),
 			imgs.to(dev),
@@ -73,8 +72,8 @@ try:
 			pred_pose,
 			poses.to(dev)
 		)
-		writer.add_scalar('Occupancy Grid Loss', loss_grid, i)
-		writer.add_scalar('Odom Loss', loss_odom, i)
+		writer.add_scalar('Loss/Occupancy Grid Loss', loss_grid, i)
+		writer.add_scalar('Loss/Odom Loss', loss_odom, i)
 
 		loss = loss_grid + loss_odom
 
@@ -84,7 +83,8 @@ try:
 
 		if (i%1) == 0:
 			log_sample(i)
-			val_loss = validate(model)
-			writer.add_scalar('CV Loss', val_loss, i)
+			val_loss_grid, val_loss_odom = validate(model)
+			writer.add_scalar('CV Loss/occupancy', val_loss_grid, i)
+			writer.add_scalar('CV Loss/odom', val_loss_odom, i)
 finally:
 	torch.save(model.state_dict(), 'model.pt')
