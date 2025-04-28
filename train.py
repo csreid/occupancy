@@ -5,6 +5,7 @@ from torch.optim import Adam
 from dataloader import OccupancyDataLoader
 from model import OccupancyGridModule
 from torch.utils.tensorboard import SummaryWriter
+from odom_vis import OdometryVisualizer
 
 BATCH_SIZE=16
 ITERATIONS=10000
@@ -28,6 +29,8 @@ loader = OccupancyDataLoader(cv_fraction=0.1)
 loss_fn_grid = BCEWithLogitsLoss()
 loss_fn_odom = MSELoss()
 
+ov = OdometryVisualizer(writer)
+
 def validate(model):
 	with torch.no_grad():
 		(imgs, scans, init_pose), (grids, poses) = loader.sample(12, for_cv=True)
@@ -45,18 +48,22 @@ def validate(model):
 def log_sample(i):
 	(sample_imgs, sample_scans, sample_init_pose), (grids, poses) = loader.sample(1, for_cv=False)
 	with torch.no_grad():
+		sample_out, pred_poses = model(
+			sample_scans.to(dev),
+			sample_imgs.to(dev),
+			sample_init_pose.to(dev)
+		)
+
 		sample_out = torch.sigmoid(
-				model(
-					sample_scans.to(dev),
-					sample_imgs.to(dev),
-					sample_init_pose.to(dev)
-				)[0].squeeze().unsqueeze(0).unsqueeze(2).to(dev)
+			sample_out.squeeze().unsqueeze(0).unsqueeze(2).to(dev)
 		)
 		grids = grids.squeeze().unsqueeze(0).unsqueeze(2).to(dev)
 
 		video = torch.cat((grids, sample_out), dim=-1).expand(-1, -1, 3, -1, -1) # Pop the one channel into RGB to treat it like a video
 
 		writer.add_video('Sample', video, i)
+
+		ov.plot_trajectory(target_odom=poses[:, 0], pred_odom=pred_poses[:, 0], step=i)
 
 try:
 	for i in tqdm(range(ITERATIONS)):
