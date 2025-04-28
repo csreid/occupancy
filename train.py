@@ -61,7 +61,8 @@ def log_sample(i):
 
 		video = torch.cat((grids, sample_out), dim=-1).expand(-1, -1, 3, -1, -1) # Pop the one channel into RGB to treat it like a video
 
-		writer.add_video('Sample', video, i)
+		writer.add_video('Sample/Grids', video, i)
+		writer.add_video('Sample/Camera',  sample_imgs.swapaxes(0, 1), i)
 
 		ov.plot_trajectory(target_odom=poses[:, 0], pred_odom=pred_poses[:, 0], step=i)
 

@@ -15,7 +15,7 @@ def _row_factory(cur, row):
 	theta = row[5]
 	griddata = row[6]
 
-	img = (np.frombuffer(imdata, dtype=np.int8).reshape(3, 240, 320) / 255.).astype(np.float32)
+	img = (np.frombuffer(imdata, dtype=np.uint8).reshape(3, 240, 320) / 255.).astype(np.float32)
 	scan = np.frombuffer(scandata, dtype=np.float32)
 	grid = np.frombuffer(griddata, dtype=np.float32).reshape(200, 200)
 
