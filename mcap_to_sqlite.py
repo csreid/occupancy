@@ -75,6 +75,15 @@ c.execute('''
 	)
 ''')
 
+base_ts = 0.
+try:
+	c.execute('''
+		select max(timestamp) from images
+	''')
+	base_ts = c.fetchall()[0][0] + 30 * 1e9 # 30 seconds after latest ts in the database
+except:
+	pass
+
 def ros_to_img(img):
 	deser = serialization.deserialize_message(img, message_type=Image)
 
@@ -85,20 +94,20 @@ def ros_to_img(img):
 		)
 	)), 2, 0)
 
-	timestamp = deser.header.stamp.sec * 1e9 + deser.header.stamp.nanosec
+	timestamp = deser.header.stamp.sec * 1e9 + deser.header.stamp.nanosec + base_ts
 
 	return timestamp, img_data.tobytes()
 
 def ros_to_gt(img):
 	deser = serialization.deserialize_message(img, message_type=Image)
 	gt = np.array(bridge.imgmsg_to_cv2(deser, desired_encoding='passthrough'))
-	timestamp = deser.header.stamp.sec * 1e9 + deser.header.stamp.nanosec
+	timestamp = deser.header.stamp.sec * 1e9 + deser.header.stamp.nanosec + base_ts
 
 	return timestamp, gt.tobytes()
 
 def ros_to_odom(odom):
 	data = serialization.deserialize_message(odom, message_type=Odometry)
-	timestamp = data.header.stamp.sec * 1e9 + data.header.stamp.nanosec
+	timestamp = data.header.stamp.sec * 1e9 + data.header.stamp.nanosec + base_ts
 
 	x = data.pose.pose.position.x
 	y = data.pose.pose.position.y
@@ -109,7 +118,7 @@ def ros_to_odom(odom):
 def scan_to_numpy(scan):
 	data = serialization.deserialize_message(scan, message_type=LaserScan)
 	ranges = np.array(data.ranges)
-	timestamp = data.header.stamp.sec * 1e9 + data.header.stamp.nanosec
+	timestamp = data.header.stamp.sec * 1e9 + data.header.stamp.nanosec + base_ts
 
 	return timestamp, ranges.tobytes()
 
