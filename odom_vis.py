@@ -20,15 +20,6 @@ class OdometryVisualizer:
 		self.writer = writer
 
 	def plot_trajectory(self, target_odom, pred_odom, step, tag='odometry/trajectory'):
-		"""
-		Plot trajectory comparison between target and predicted odometry.
-
-		Args:
-			target_odom: Target odometry tensor of shape [seq_len, 3] (x, y, theta)
-			pred_odom: Predicted odometry tensor of shape [seq_len, 3] (x, y, theta)
-			step: Global step for TensorBoard logging
-			tag: Tag for the plot in TensorBoard
-		"""
 		# Convert tensors to numpy for plotting
 		if isinstance(target_odom, torch.Tensor):
 			target_odom = target_odom.detach().cpu().numpy()
@@ -49,16 +40,24 @@ class OdometryVisualizer:
 		n = max(1, len(target_odom) // 10)  # Show max 10 arrows
 		for i in range(0, len(target_odom), n):
 			# Target orientation
-			dx = 0.2 * np.cos(target_odom[i, 2])
-			dy = 0.2 * np.sin(target_odom[i, 2])
+			dx = 0.2 * target_odom[i, 2]
+			dy = 0.2 * target_odom[i, 3]
 			ax.arrow(target_odom[i, 0], target_odom[i, 1], dx, dy, 
 					 head_width=0.05, head_length=0.1, fc='blue', ec='blue')
 
 			# Predicted orientation
-			dx = 0.2 * np.cos(pred_odom[i, 2])
-			dy = 0.2 * np.sin(pred_odom[i, 2])
-			ax.arrow(pred_odom[i, 0], pred_odom[i, 1], dx, dy,
-					 head_width=0.05, head_length=0.1, fc='red', ec='red')
+			dx = 0.2 * pred_odom[i, 2]
+			dy = 0.2 * pred_odom[i, 3]
+			ax.arrow(
+				pred_odom[i, 0],
+				pred_odom[i, 1],
+				dx,
+				dy,
+				head_width=0.05,
+				head_length=0.1,
+				fc='red',
+				ec='red'
+			)
 
 		# Mark start and end points
 		ax.plot(target_odom[0, 0], target_odom[0, 1], 'bo', markersize=8, label='Start')
