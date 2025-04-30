@@ -145,7 +145,7 @@ class RecurrentModule(Module):
 	def __init__(self):
 		super().__init__()
 		self._input_size = 128*2 #128 for each of LIDAR and vision data
-		self._rnn = LSTM(self._input_size, 256)
+		self._rnn = LSTM(self._input_size, 64)
 		self._linear = Linear(256, 512)
 
 	def forward(self, X, in_state=None):
